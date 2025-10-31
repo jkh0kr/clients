@@ -99,28 +99,35 @@ import { ExportScopeCalloutComponent } from "./export-scope-callout.component";
   ],
 })
 export class ExportComponent implements OnInit, OnDestroy, AfterViewInit {
-  private _organizationId$ = new BehaviorSubject<OrganizationId | undefined>(undefined);
+  /**
+   * The organization ID passed as @Input by the Admin Console
+   * The password manager will not set this, and sends org id using a form control ( see ngOnInit() )
+   */
+  private _organizationIdFromInput$ = new BehaviorSubject<OrganizationId | undefined>(undefined);
+
+  /**
+   * The organization ID to export from, as determined using @Input in Admin Console context
+   * or vault selector form control in Password Manager context
+   */
+  protected organizationId$: Observable<OrganizationId | undefined>;
+
   private createDefaultLocationFlagEnabled$: Observable<boolean>;
   private _showExcludeMyItems = false;
 
-  /**
-   * Enables the hosting control to pass in an organizationId
-   * If a organizationId is provided, the organization selection is disabled.
-   */
   // TODO: Fix this the next time the file is edited.
   // eslint-disable-next-line @angular-eslint/prefer-signals
   @Input() set organizationId(value: OrganizationId | string | undefined) {
     if (Utils.isNullOrEmpty(value)) {
-      this._organizationId$.next(undefined);
+      this._organizationIdFromInput$.next(undefined);
       return;
     }
 
     if (!isId<OrganizationId>(value)) {
-      this._organizationId$.next(undefined);
+      this._organizationIdFromInput$.next(undefined);
       return;
     }
 
-    this._organizationId$.next(value);
+    this._organizationIdFromInput$.next(value);
 
     getUserId(this.accountService.activeAccount$)
       .pipe(
@@ -128,12 +135,12 @@ export class ExportComponent implements OnInit, OnDestroy, AfterViewInit {
       )
       .pipe(takeUntil(this.destroy$))
       .subscribe((organization) => {
-        this._organizationId$.next(organization?.id);
+        this._organizationIdFromInput$.next(organization?.id);
       });
   }
 
   get organizationId(): OrganizationId | undefined {
-    return this._organizationId$.value;
+    return this._organizationIdFromInput$.value;
   }
 
   get showExcludeMyItems(): boolean {
@@ -265,6 +272,35 @@ export class ExportComponent implements OnInit, OnDestroy, AfterViewInit {
   ) {}
 
   async ngOnInit() {
+    // Create organizationId$ as a combined observable from @Input and form changes
+    const organizationIdFromForm$ = this.exportForm.controls.vaultSelector.valueChanges.pipe(
+      map((vaultSelection) => {
+        if (this.isAdminConsoleContext) {
+          // In Admin Console, ignore form changes - use input value
+          return undefined;
+        }
+        // In Password Manager, map form selection to organizationId
+        const isMyVault = vaultSelection === "myVault";
+        return isMyVault ? undefined : (vaultSelection as OrganizationId);
+      }),
+      startWith(undefined as OrganizationId | undefined),
+    );
+
+    this.organizationId$ = combineLatest([
+      this._organizationIdFromInput$,
+      organizationIdFromForm$,
+    ]).pipe(
+      map(([inputOrgId, formOrgId]) => {
+        // Admin Console context: use input value
+        if (this.isAdminConsoleContext) {
+          return inputOrgId;
+        }
+        // Password Manager context: use form value
+        return formOrgId;
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    );
+
     this.observeFeatureFlags();
     this.observeFormState();
     this.observePolicyStatus();
@@ -321,7 +357,7 @@ export class ExportComponent implements OnInit, OnDestroy, AfterViewInit {
     */
     this.organizationDataOwnershipPolicyEnabledForOrg$ = combineLatest([
       this.accountService.activeAccount$.pipe(getUserId),
-      this._organizationId$,
+      this.organizationId$,
     ]).pipe(
       switchMap(([userId, organizationId]) => {
         if (!organizationId || !userId) {
@@ -342,23 +378,9 @@ export class ExportComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   private observeFormSelections(): void {
-    // Step 1: Update _organizationId$ when vault selection changes
-    // In Admin Console context, organizationId is already set via @Input
-    // In Password Manager context, user changes vaultSelector which updates _organizationId$
-    this.exportForm.controls.vaultSelector.valueChanges
-      .pipe(takeUntil(this.destroy$))
-      .subscribe((vaultSelection) => {
-        if (!this.isAdminConsoleContext) {
-          // Password Manager: Update organizationId based on vaultSelector
-          const isMyVault = vaultSelection === "myVault";
-          this.organizationId = isMyVault ? undefined : vaultSelection;
-        }
-        // Admin Console: organizationId is already set via @Input, no update needed
-      });
-
-    // Step 2: Set up dynamic format options based on the organizationId observable
-    // This is the single source of truth for both export contexts
-    this.formatOptions$ = this._organizationId$.pipe(
+    // Set up dynamic format options based on the organizationId$ observable
+    // organizationId$ already combines input and form changes
+    this.formatOptions$ = this.organizationId$.pipe(
       map((organizationId) => {
         const isMyVault = !organizationId;
         return { isMyVault };
@@ -389,7 +411,7 @@ export class ExportComponent implements OnInit, OnDestroy, AfterViewInit {
       createDefaultLocationFlagEnabled: this.createDefaultLocationFlagEnabled$,
       organizationDataOwnershipPolicyEnabledForOrg:
         this.organizationDataOwnershipPolicyEnabledForOrg$,
-      organizationId: this._organizationId$,
+      organizationId: this.organizationId$,
     })
       .pipe(takeUntil(this.destroy$))
       .subscribe(
