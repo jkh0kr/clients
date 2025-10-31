@@ -272,10 +272,11 @@ export class ExportComponent implements OnInit, OnDestroy, AfterViewInit {
   ) {}
 
   async ngOnInit() {
+    const exportingFromAdminConsole: boolean = this.isAdminConsoleContext;
     // Create organizationId$ as a combined observable from @Input and form changes
     const organizationIdFromForm$ = this.exportForm.controls.vaultSelector.valueChanges.pipe(
       map((vaultSelection) => {
-        if (this.isAdminConsoleContext) {
+        if (exportingFromAdminConsole) {
           // In Admin Console, ignore form changes - use input value
           return undefined;
         }
@@ -292,7 +293,7 @@ export class ExportComponent implements OnInit, OnDestroy, AfterViewInit {
     ]).pipe(
       map(([inputOrgId, formOrgId]) => {
         // Admin Console context: use input value
-        if (this.isAdminConsoleContext) {
+        if (exportingFromAdminConsole) {
           return inputOrgId;
         }
         // Password Manager context: use form value
